@@ -15,7 +15,7 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "")
 
 
 def restock():
-    with psycopg.connect(RW_URL, row_factory=dict_row, options="-c search_path=pizza") as conn:
+    with psycopg.connect(RW_URL, row_factory=dict_row) as conn:
         conn.prepare_threshold = None
         cur = conn.execute(
             "UPDATE inventory SET quantity = m.baseline_stock "

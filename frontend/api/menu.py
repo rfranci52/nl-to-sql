@@ -15,7 +15,7 @@ RO_URL = os.environ.get("PIZZA_RO_URL", "")
 
 def get_menu():
     # prepare_threshold=None is required for Neon's pooled endpoint (PgBouncer).
-    with psycopg.connect(RO_URL, row_factory=dict_row, options="-c search_path=pizza") as conn:
+    with psycopg.connect(RO_URL, row_factory=dict_row) as conn:
         conn.prepare_threshold = None
         conn.read_only = True
         return conn.execute(

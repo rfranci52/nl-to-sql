@@ -52,7 +52,7 @@ def place_order(items, name=None):
 
     customer = clean_name(name)
     try:
-        with psycopg.connect(RW_URL, row_factory=dict_row, options="-c search_path=pizza") as conn:
+        with psycopg.connect(RW_URL, row_factory=dict_row) as conn:
             conn.prepare_threshold = None
             menu = {}
             for mid, _q in cleaned:

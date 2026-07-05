@@ -144,7 +144,7 @@ def _clean(v):
 
 
 def run_query(sql):
-    with psycopg.connect(RO_URL, row_factory=dict_row, options="-c search_path=pizza") as conn:
+    with psycopg.connect(RO_URL, row_factory=dict_row) as conn:
         conn.prepare_threshold = None
         conn.read_only = True
         cur = conn.execute(sql)
