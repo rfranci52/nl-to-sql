@@ -1,4 +1,4 @@
-"""Tony's Pizza — synthetic database for the plain-English → SQL demo.
+"""Tony's Pizza: synthetic database for the plain-English → SQL demo.
 
 A small, relatable pizza-shop schema (customers, menu, orders, line items) with
 sensible fake data, so a visitor can ask questions in plain English and see them
@@ -11,7 +11,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "pizza.db"
-SHOP_NAME = "Tony's Pizza"  # display name only — one-line swap (e.g. "Rakim's Pizza")
+SHOP_NAME = "Tony's Pizza"  # display name only; one-line swap (e.g. "Rakim's Pizza")
 
 SCHEMA = """
 CREATE TABLE customers (
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
               for t in ("customers", "pizzas", "orders", "order_items")}
     print(f"seeded {SHOP_NAME}: {counts}")
-    print("\nsample — top 5 customers by total spend (delivered orders):")
+    print("\nsample: top 5 customers by total spend (delivered orders):")
     rows = conn.execute("""
         SELECT c.name, ROUND(SUM(oi.quantity * p.price), 2) AS spent
         FROM order_items oi

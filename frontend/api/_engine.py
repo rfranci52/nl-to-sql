@@ -1,35 +1,22 @@
-"""Plain-English -> SQL: the risky core of Tony's Pizza.
+"""Plain-English to SQL for Tony's Pizza (read-only). Deploy-side mirror of
+~/pizza-sql/engine.py; keep the schema description + safety rules in sync with it.
 
-A visitor types a question in plain English. We hand Claude a described schema and
-ask for three things: an interpretation, a single read-only SELECT, and (when the
-question can't be answered) a clarifying question instead of a guess.
-
-Safety is enforced here, not trusted to the model: every generated query is checked
-to be a single SELECT and run through a read-only connection (the pizza_ro role,
-which physically cannot write). If the model ever emitted an INSERT/DROP/etc., it
-would be rejected before it ran.
-
-Reads run against the shared Postgres platform (the `pizza` schema on Neon).
-Model: claude-haiku-4-5: cheap, fast, plenty for this schema (one-line swap).
+Translation goes to Claude over raw HTTPS (no SDK dependency, and this exact path
+is already proven in production). Reads run through the pizza_ro role, and every
+generated query is validated to be a single SELECT before it runs.
 """
-
+import json
+import os
+import urllib.request
 from datetime import date, datetime
 from decimal import Decimal
 
-import anthropic
-from dotenv import load_dotenv
-from pydantic import BaseModel
+import _db
 
-import pgdb
-
-load_dotenv()  # ANTHROPIC_API_KEY + PIZZA_RO_URL from a gitignored .env
-
-SHOP_NAME = "Tony's Pizza"
 MODEL = "claude-haiku-4-5"
-MAX_ROWS = 200  # never flood the UI, however broad the question
+MAX_ROWS = 200
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
-# Written for Claude, not for humans; every note here exists because it makes the
-# generated SQL correct.
 SCHEMA_DESCRIPTION = """\
 PostgreSQL database for a pizza shop (schema: pizza; unqualified table names resolve there). Tables:
 
@@ -86,38 +73,50 @@ short, specific question in "clarifying_question".
 - When understood=true, leave clarifying_question empty. When understood=false, \
 leave sql empty."""
 
+SCHEMA_JSON = {
+    "type": "object",
+    "properties": {
+        "understood": {"type": "boolean"},
+        "interpretation": {"type": "string"},
+        "sql": {"type": "string"},
+        "clarifying_question": {"type": "string"},
+    },
+    "required": ["understood", "interpretation", "sql", "clarifying_question"],
+    "additionalProperties": False,
+}
 
-class Translation(BaseModel):
-    """The structured contract we get back from Claude."""
-    understood: bool
-    interpretation: str
-    sql: str
-    clarifying_question: str
 
-
-def translate(question: str) -> Translation:
-    """Ask Claude to turn a plain-English question into SQL + a restatement."""
-    client = anthropic.Anthropic()
-    response = client.messages.parse(
-        model=MODEL,
-        max_tokens=1024,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": question}],
-        output_format=Translation,
+def translate(question: str) -> dict:
+    """Ask Claude for SQL + a restatement, over raw HTTPS (structured output)."""
+    body = json.dumps({
+        "model": MODEL,
+        "max_tokens": 1024,
+        "system": SYSTEM,
+        "messages": [{"role": "user", "content": question}],
+        "output_config": {"format": {"type": "json_schema", "schema": SCHEMA_JSON}},
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        method="POST",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
     )
-    return response.parsed_output
+    with urllib.request.urlopen(req, timeout=30) as r:
+        payload = json.loads(r.read())
+    text = next((b["text"] for b in payload.get("content", []) if b.get("type") == "text"), "{}")
+    return json.loads(text)
 
 
-# --- read-only safety: enforced by us, not the model ------------------------
-
-_FORBIDDEN = (
-    "insert", "update", "delete", "drop", "alter", "create", "replace",
-    "truncate", "grant", "revoke", "copy", "into", "vacuum", "begin", "commit",
-)
+# Read-only safety: enforced here, not trusted to the model.
+_FORBIDDEN = ("insert", "update", "delete", "drop", "alter", "create", "replace",
+              "truncate", "grant", "revoke", "copy", "into", "vacuum", "begin", "commit")
 
 
 def is_safe_select(sql: str) -> bool:
-    """A single SELECT (or CTE), no stacked statements, no write keywords."""
     s = sql.strip().rstrip(";").strip()
     if not s or ";" in s:
         return False
@@ -129,7 +128,6 @@ def is_safe_select(sql: str) -> bool:
 
 
 def _clean(v):
-    """Make Postgres values JSON-serializable (Decimal -> float, dates -> string)."""
     if isinstance(v, (bytes, bytearray)):
         return v.decode("utf-8", "replace")
     if isinstance(v, Decimal):
@@ -140,8 +138,7 @@ def _clean(v):
 
 
 def run_query(sql: str):
-    """Execute a vetted SELECT through the read-only pizza_ro connection."""
-    with pgdb.ro_connect() as conn:
+    with _db.ro_connect() as conn:
         cur = conn.execute(sql)
         columns = [c.name for c in cur.description]
         rows = [{k: _clean(v) for k, v in row.items()} for row in cur.fetchmany(MAX_ROWS)]
@@ -149,40 +146,16 @@ def run_query(sql: str):
 
 
 def answer(question: str) -> dict:
-    """Full path: translate -> validate -> run. The result shape the UI needs."""
     t = translate(question)
-    if not t.understood:
-        return {"ok": False, "interpretation": t.interpretation,
-                "clarify": t.clarifying_question}
-    if not is_safe_select(t.sql):
-        return {"ok": False, "interpretation": t.interpretation,
-                "clarify": "I could only answer that with a read-only lookup. "
-                           "Try rephrasing as a question about the data."}
-    columns, rows = run_query(t.sql)
-    return {"ok": True, "interpretation": t.interpretation, "sql": t.sql,
+    if not t.get("understood"):
+        return {"ok": False, "interpretation": t.get("interpretation", ""),
+                "clarify": t.get("clarifying_question")
+                or "Could you rephrase that as a question about the shop's data?"}
+    sql = t.get("sql", "")
+    if not is_safe_select(sql):
+        return {"ok": False, "interpretation": t.get("interpretation", ""),
+                "clarify": "I could only answer that with a read-only lookup, try "
+                           "rephrasing as a question about the data."}
+    columns, rows = run_query(sql)
+    return {"ok": True, "interpretation": t.get("interpretation", ""), "sql": sql,
             "columns": columns, "rows": rows}
-
-
-if __name__ == "__main__":
-    import sys
-
-    questions = sys.argv[1:] or [
-        "which category brings in the most revenue?",
-        "which item sells the most?",
-        "who are our top 5 customers by how much they've spent?",
-        "how many drinks do we have in stock?",
-        "what's the weather in Tokyo?",  # off-topic -> should ask to clarify
-    ]
-    print(f"== {SHOP_NAME}: plain-English -> SQL (Postgres) ==\n")
-    for q in questions:
-        print(f"Q: {q}")
-        res = answer(q)
-        print(f"   understood: {res['ok']}")
-        print(f"   reading it as: {res['interpretation']}")
-        if not res["ok"]:
-            print(f"   clarify: {res['clarify']}\n")
-            continue
-        print(f"   SQL: {res['sql']}")
-        for row in res["rows"][:5]:
-            print("     " + "  ".join(f"{k}={v}" for k, v in row.items()))
-        print()

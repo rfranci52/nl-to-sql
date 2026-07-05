@@ -1,4 +1,4 @@
-// Thin client for the FastAPI backend. Same shape as engine.answer().
+// Thin client for the FastAPI backend. Same shapes as the engine + orders modules.
 
 export interface AskResult {
   ok: boolean;
@@ -27,5 +27,48 @@ export interface Examples {
 export async function getExamples(): Promise<Examples> {
   const res = await fetch("/api/examples");
   if (!res.ok) throw new Error("Couldn't load examples");
+  return res.json();
+}
+
+export interface MenuItem {
+  id: number;
+  name: string;
+  category: string;
+  price: number;
+  in_stock: number;
+}
+
+export async function getMenu(): Promise<MenuItem[]> {
+  const res = await fetch("/api/menu");
+  if (!res.ok) throw new Error("Couldn't load the menu");
+  return (await res.json()).menu;
+}
+
+export interface OrderLine {
+  name: string;
+  quantity: number;
+  price: number;
+  subtotal: number;
+}
+
+export interface OrderResult {
+  ok: boolean;
+  order_id?: number;
+  customer?: string;
+  lines?: OrderLine[];
+  total?: number;
+  error?: string;
+}
+
+export async function placeOrder(
+  items: { menu_item_id: number; quantity: number }[],
+  name: string,
+): Promise<OrderResult> {
+  const res = await fetch("/api/order", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items, name }),
+  });
+  if (!res.ok) throw new Error(`Order failed (${res.status})`);
   return res.json();
 }
