@@ -1,8 +1,29 @@
-"""Vercel serverless: the menu + current stock, for the ordering UI."""
+"""Vercel serverless: the menu + current stock, for the ordering UI.
+
+Self-contained (stdlib + psycopg only) so there are no local modules to bundle.
+Reads through the read-only pizza_ro role on Neon.
+"""
 import json
+import os
 from http.server import BaseHTTPRequestHandler
 
-import _orders
+import psycopg
+from psycopg.rows import dict_row
+
+RO_URL = os.environ.get("PIZZA_RO_URL", "")
+
+
+def get_menu():
+    # prepare_threshold=None is required for Neon's pooled endpoint (PgBouncer).
+    with psycopg.connect(RO_URL, row_factory=dict_row, options="-c search_path=pizza") as conn:
+        conn.prepare_threshold = None
+        conn.read_only = True
+        return conn.execute(
+            "SELECT m.id, m.name, m.category, m.price::float AS price, "
+            "       COALESCE(i.quantity, 0) AS in_stock "
+            "FROM menu_items m LEFT JOIN inventory i ON i.menu_item_id = m.id "
+            "ORDER BY m.category, m.id"
+        ).fetchall()
 
 
 class handler(BaseHTTPRequestHandler):
@@ -14,7 +35,7 @@ class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            return self._reply(200, {"menu": _orders.get_menu()})
+            return self._reply(200, {"menu": get_menu()})
         except Exception:
             import traceback
             traceback.print_exc()

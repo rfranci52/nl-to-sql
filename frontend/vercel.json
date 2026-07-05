@@ -4,11 +4,5 @@
   ],
   "crons": [
     { "path": "/api/restock", "schedule": "0 8 * * *" }
-  ],
-  "functions": {
-    "api/ask.py": { "includeFiles": "api/_*.py" },
-    "api/menu.py": { "includeFiles": "api/_*.py" },
-    "api/order.py": { "includeFiles": "api/_*.py" },
-    "api/restock.py": { "includeFiles": "api/_*.py" }
-  }
+  ]
 }

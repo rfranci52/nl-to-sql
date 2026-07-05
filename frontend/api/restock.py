@@ -1,16 +1,27 @@
 """Vercel serverless: refill inventory to baseline. The daily cron target.
 
-Vercel Cron invokes this with GET and an `Authorization: Bearer <CRON_SECRET>`
-header (added automatically when CRON_SECRET is set in the project env). Sales are
-left untouched; only inventory is topped back up.
+Self-contained (stdlib + psycopg only). Vercel Cron invokes this with GET and an
+`Authorization: Bearer <CRON_SECRET>` header. Sales are left untouched.
 """
 import json
 import os
 from http.server import BaseHTTPRequestHandler
 
-import _orders
+import psycopg
+from psycopg.rows import dict_row
 
+RW_URL = os.environ.get("PIZZA_RW_URL", "")
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
+
+
+def restock():
+    with psycopg.connect(RW_URL, row_factory=dict_row, options="-c search_path=pizza") as conn:
+        conn.prepare_threshold = None
+        cur = conn.execute(
+            "UPDATE inventory SET quantity = m.baseline_stock "
+            "FROM menu_items m WHERE m.id = inventory.menu_item_id"
+        )
+        return cur.rowcount
 
 
 class handler(BaseHTTPRequestHandler):
@@ -26,7 +37,7 @@ class handler(BaseHTTPRequestHandler):
         if self.headers.get("authorization") != f"Bearer {CRON_SECRET}":
             return self._reply(403, {"ok": False, "error": "unauthorized"})
         try:
-            return self._reply(200, {"ok": True, "restocked": _orders.restock()})
+            return self._reply(200, {"ok": True, "restocked": restock()})
         except Exception:
             import traceback
             traceback.print_exc()
