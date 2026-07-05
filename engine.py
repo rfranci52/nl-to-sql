@@ -45,9 +45,10 @@ inventory(menu_item_id, quantity)
 customers(id, name, city, joined_date)
     One row per customer. joined_date is a date.
 
-orders(id, customer_id, order_date, status)
-    One row per order. customer_id -> customers.id. order_date is a date. status is
-    one of 'Received', 'In Progress', 'Delivered', 'Cancelled'.
+orders(id, customer_id, order_date, status, created_at)
+    One row per order. customer_id -> customers.id. order_date is a date.
+    created_at is a timestamptz for when the order was placed (date and time of day).
+    status is one of 'Received', 'In Progress', 'Delivered', 'Cancelled'.
 
 order_items(id, order_id, menu_item_id, quantity)
     Line items. order_id -> orders.id, menu_item_id -> menu_items.id.
@@ -66,6 +67,13 @@ Notes for writing correct SQL:
   wants all orders (e.g. "including cancelled", "pending orders").
 - Group by menu_items.category for questions comparing categories (pies vs drinks).
 - Dates: today is CURRENT_DATE; use interval math like CURRENT_DATE - INTERVAL '30 days'.
+- "Most recent" / "latest" / "last" order = the order with the largest orders.id, or
+  equivalently the latest created_at. order_date is a date only, so many orders share
+  one date; never use MAX(order_date) to pick a single order. Use MAX(orders.id) or
+  ORDER BY orders.id DESC LIMIT 1 for that one order's rows.
+- created_at is a full timestamp, so use it for time-of-day questions (busiest hour,
+  orders in the last N minutes or hours, trends over time), e.g. WHERE created_at >=
+  now() - interval '1 hour', or GROUP BY date_trunc('hour', created_at).
 - Use standard PostgreSQL syntax.
 """
 
