@@ -41,6 +41,16 @@ header h1::before {
   color: var(--muted);
   max-width: 62ch;
 }
+.backlink {
+  display: inline-block;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: none;
+}
+.backlink:hover {
+  color: var(--accent);
+}
 
 .section-title {
   font-size: 13px;

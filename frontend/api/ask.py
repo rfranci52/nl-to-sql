@@ -69,6 +69,13 @@ Notes for writing correct SQL:
 - created_at is a full timestamp, so use it for time-of-day questions (busiest hour,
   orders in the last N minutes or hours, trends over time), e.g. WHERE created_at >=
   now() - interval '1 hour', or GROUP BY date_trunc('hour', created_at).
+- An order has one or more order_items, so ALWAYS return exactly one row per order,
+  never one row per line item. "The latest order" is 1 row; "the latest 5 orders" is 5
+  rows. Show each order's full contents in that single row by aggregating its items with
+  GROUP BY orders.id, e.g. STRING_AGG(oi.quantity || 'x ' || mi.name, ', ') AS items,
+  SUM(oi.quantity) AS item_count, SUM(oi.quantity * mi.price) AS total. Only go to
+  line-item level (several rows per order) when the user explicitly asks for the items,
+  the line items, or what is "in" an order.
 - Use standard PostgreSQL syntax.
 """
 
