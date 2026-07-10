@@ -20,6 +20,7 @@ export default function App() {
   const [placing, setPlacing] = useState(false);
   const [receipt, setReceipt] = useState<OrderResult | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // query state
   const [question, setQuestion] = useState("");
@@ -100,7 +101,21 @@ export default function App() {
       </header>
 
       <section className="order">
-        <h2 className="section-title">Order something</h2>
+        <button
+          type="button"
+          className="menu-toggle"
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-expanded={menuOpen}
+        >
+          <span className="cat-chevron">{menuOpen ? "▾" : "▸"}</span>
+          <span className="menu-toggle-name">Menu</span>
+          <span className="cat-count">
+            {menu.length} item{menu.length === 1 ? "" : "s"}
+            {cartCount > 0 ? ` · ${cartCount} in order` : ""}
+          </span>
+        </button>
+
+        {menuOpen && (<>
         {categories.map((cat) => {
           const items = menu.filter((m) => m.category === cat);
           const inOrder = items.reduce((n, m) => n + (cart[m.id] ?? 0), 0);
@@ -163,6 +178,7 @@ export default function App() {
                 : `Place order · ${cartCount} item${cartCount > 1 ? "s" : ""} · $${cartTotal.toFixed(2)}`}
           </button>
         </div>
+        </>)}
 
         {receipt &&
           (receipt.ok ? (
