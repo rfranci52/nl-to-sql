@@ -260,6 +260,38 @@ export default function App() {
           </div>
         )}
       </section>
+
+      <section className="query">
+        <h2 className="section-title">How this demo defends itself</h2>
+        <p className="tag">
+          A public LLM with database access is the thing engineering teams worry
+          about, so every layer here assumes the one above it can fail:
+        </p>
+        <p className="tag">
+          <strong>The model only proposes.</strong> Code checks every query is a
+          single read-only SELECT before it runs, and the connection itself uses a
+          read-only database role, so a write would be refused twice.
+        </p>
+        <p className="tag">
+          <strong>Grounded to the schema.</strong> The model works from an explicit
+          field catalog and can't invent columns; an ambiguous question gets a
+          clarifying question back, not a guess.
+        </p>
+        <p className="tag">
+          <strong>Nothing hidden.</strong> The exact SQL that ran is shown with
+          every answer.
+        </p>
+        <p className="tag">
+          <strong>Constrained input.</strong> Ordering is menu-driven; the single
+          free-text field is filtered and length-capped.
+        </p>
+        <p className="tag">
+          <strong>Bounded worst case.</strong> Per-visitor and global daily limits,
+          capped result sizes, and an API key on a small prepaid balance. If every
+          layer failed, the demo would pause until tomorrow, an inconvenience, not
+          an incident.
+        </p>
+      </section>
     </div>
   );
 }
