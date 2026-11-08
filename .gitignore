@@ -7,3 +7,5 @@ node_modules/
 dist/
 .DS_Store
 *.local.sql
+STUDY_NOTES.md
+who_visited.py

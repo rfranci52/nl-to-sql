@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ask,
   getExamples,
@@ -27,6 +27,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<AskResult | null>(null);
+  const askRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     getExamples().then((d) => { setShop(d.shop); setExamples(d.examples); }).catch(() => {});
@@ -85,6 +86,12 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function followUp(q: string) {
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    askRef.current?.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "start" });
+    run(q);
   }
 
   const categories = [...new Set(menu.map((m) => m.category))];
@@ -167,7 +174,7 @@ export default function App() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Your name (optional)"
+            placeholder="Your name (optional, shown publicly)"
             maxLength={30}
           />
           <button className="place" onClick={submitOrder} disabled={cartCount === 0 || placing}>
@@ -196,8 +203,20 @@ export default function App() {
                 ))}
               </ul>
               <div className="receipt-total">Total ${receipt.total?.toFixed(2)}</div>
-              <div className="receipt-nudge">
-                Now ask about it below. Try "what's in the most recent order?"
+              {receipt.restocked && receipt.restocked.length > 0 && (
+                <div className="receipt-restock">
+                  Running low, so the kitchen restocked: {receipt.restocked.join(", ")}.
+                </div>
+              )}
+              <div className="receipt-followups">
+                <div className="receipt-ask">Ask about your order:</div>
+                <div className="receipt-chips">
+                  {followUps(receipt).map((q) => (
+                    <button key={q} className="chip" onClick={() => followUp(q)} disabled={loading}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           ) : (
@@ -205,7 +224,7 @@ export default function App() {
           ))}
       </section>
 
-      <section className="query">
+      <section className="query" ref={askRef}>
         <h2 className="section-title">Ask the data</h2>
         <form
           className="askbar"
@@ -219,6 +238,7 @@ export default function App() {
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             placeholder="e.g. which category makes the most money?"
+            maxLength={500}
           />
           <button type="submit" disabled={loading}>
             {loading ? "Thinking…" : "Ask"}
@@ -255,6 +275,7 @@ export default function App() {
                   </pre>
                 )}
                 <Table columns={result.columns ?? []} rows={result.rows ?? []} />
+                {result.truncated && <p className="truncated">Showing the first 200 rows.</p>}
               </>
             )}
           </div>
@@ -269,31 +290,47 @@ export default function App() {
         </p>
         <p className="tag">
           <strong>The model only proposes.</strong> Code checks every query is a
-          single read-only SELECT before it runs, and the connection itself uses a
-          read-only database role, so a write would be refused twice.
+          single read-only SELECT before it runs, and it runs as a read-only
+          database role inside a read-only transaction that is always rolled back,
+          so a write would be refused twice and nothing the query does persists.
         </p>
         <p className="tag">
           <strong>Grounded to the schema.</strong> The model works from an explicit
-          field catalog and can't invent columns; an ambiguous question gets a
-          clarifying question back, not a guess.
+          field catalog and is told to use only those columns; if it invents one,
+          the database rejects the query. An ambiguous question gets a clarifying
+          question back, not a guess.
         </p>
         <p className="tag">
           <strong>Nothing hidden.</strong> The exact SQL that ran is shown with
           every answer.
         </p>
         <p className="tag">
-          <strong>Constrained input.</strong> Ordering is menu-driven; the single
-          free-text field is filtered and length-capped.
+          <strong>Constrained input.</strong> Ordering is menu-driven; questions
+          are capped at 500 characters, and the single free-text field (your name)
+          is length-capped and filtered for invisible characters and slurs.
         </p>
         <p className="tag">
           <strong>Bounded worst case.</strong> Per-visitor and global daily limits,
-          capped result sizes, and an API key on a small prepaid balance. If every
-          layer failed, the demo would pause until tomorrow, an inconvenience, not
-          an incident.
+          a 5-second limit on every query, results capped at 200 rows, and an API key
+          on a small prepaid balance. If every layer failed, the demo would simply
+          stop answering until the limits reset or the balance is topped up: an
+          inconvenience, not an incident.
         </p>
       </section>
     </div>
   );
+}
+
+function followUps(r: OrderResult): string[] {
+  const qs = [`What's in order #${r.order_id}?`];
+  const first = r.lines?.[0]?.name;
+  if (first) qs.push(`How many ${first} are left?`);
+  qs.push(
+    r.customer && r.customer !== "Guest"
+      ? `How much has ${r.customer} spent with us?`
+      : "Show the 5 most recent orders",
+  );
+  return qs;
 }
 
 function Table({

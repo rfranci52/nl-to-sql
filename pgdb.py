@@ -23,7 +23,8 @@ RW_URL = os.environ.get("PIZZA_RW_URL", "")
 def ro_connect() -> psycopg.Connection:
     """Read-only connection for NL->SQL queries. read_only is belt-and-suspenders
     on top of the pizza_ro role, which already cannot write anything."""
-    conn = psycopg.connect(RO_URL, row_factory=dict_row, options="-c search_path=pizza")
+    conn = psycopg.connect(RO_URL, row_factory=dict_row, options="-c search_path=pizza",
+                           connect_timeout=10)
     conn.read_only = True
     return conn
 

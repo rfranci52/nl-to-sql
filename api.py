@@ -77,6 +77,9 @@ def ask(req: AskRequest) -> dict:
     question = req.question.strip()
     if not question:
         return {"ok": False, "clarify": "Ask a question about the pizza shop."}
+    if len(question) > engine.MAX_QUESTION_CHARS:
+        return {"ok": False,
+                "clarify": f"Please keep questions under {engine.MAX_QUESTION_CHARS} characters."}
     try:
         return engine.answer(question)
     except Exception:

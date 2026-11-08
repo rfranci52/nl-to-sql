@@ -223,6 +223,17 @@ header h1::before {
   opacity: 0.5;
   cursor: default;
 }
+@media (max-width: 600px) {
+  .checkout {
+    flex-wrap: wrap;
+  }
+  .checkout .name {
+    flex-basis: 100%;
+  }
+  .place {
+    flex: 1;
+  }
+}
 
 .receipt {
   margin-top: 16px;
@@ -254,10 +265,30 @@ header h1::before {
   font-family: var(--mono);
   font-weight: 600;
 }
-.receipt-nudge {
-  margin-top: 10px;
+.receipt-restock {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.receipt-followups {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.receipt-ask {
+  margin-bottom: 8px;
   font-size: 13px;
   color: var(--accent);
+}
+.receipt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.receipt-chips .chip {
+  max-width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 .order-error {
   margin-top: 16px;
@@ -408,5 +439,10 @@ td {
 }
 
 .norows {
+  color: var(--muted);
+}
+.truncated {
+  margin: 10px 0 0;
+  font-size: 13px;
   color: var(--muted);
 }

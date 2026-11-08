@@ -44,7 +44,7 @@ FIRST_NAMES = ["Maria", "James", "Aisha", "David", "Sofia", "Marcus", "Elena", "
                "Nina", "Carlos", "Grace", "Omar", "Lena", "Andre", "Priya", "Sam", "Jade",
                "Victor", "Rosa", "Kwame", "Hana", "Leo", "Fatima", "Dominic"]
 LAST_NAMES = ["Rivera", "Chen", "Okafor", "Nguyen", "Patel", "Rossi", "Silva", "Kim",
-              "Johnson", "Diaz", "Ali", "Brooks", "Cohen", "Santos", "Reyes", "Walsh"]
+              "Johnson", "Diaz", "Ali", "Brooks", "Murphy", "Santos", "Reyes", "Walsh"]
 CITIES = ["Brooklyn", "Queens", "Bronx", "Manhattan", "Newark", "Jersey City", "Yonkers", "Hoboken"]
 
 # pizza name -> Medium price; Small = -20%, Large = +30%

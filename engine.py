@@ -10,7 +10,8 @@ which physically cannot write). If the model ever emitted an INSERT/DROP/etc., i
 would be rejected before it ran.
 
 Reads run against the shared Postgres platform (the `pizza` schema on Neon).
-Model: claude-haiku-4-5: cheap, fast, plenty for this schema (one-line swap).
+Model: Claude Opus 5.5 at low effort. It always thinks before answering, so EFFORT,
+not a thinking switch, is what trades accuracy against latency and cost.
 """
 
 from datetime import date, datetime
@@ -18,6 +19,7 @@ from decimal import Decimal
 
 import anthropic
 from dotenv import load_dotenv
+from psycopg.errors import QueryCanceled
 from pydantic import BaseModel
 
 import pgdb
@@ -25,8 +27,18 @@ import pgdb
 load_dotenv()  # ANTHROPIC_API_KEY + PIZZA_RO_URL from a gitignored .env
 
 SHOP_NAME = "Tony's Pizza"
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-opus-5-5"
+EFFORT = "low"
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
 MAX_ROWS = 200  # never flood the UI, however broad the question
+MAX_QUESTION_CHARS = 500  # bounds the input side of every call's cost
+SHOP_TZ = "America/New_York"
+REFUSAL_CLARIFY = ("I can only answer questions about the shop's menu, orders, customers "
+                   "and stock. Try asking about one of those.")
+TOO_BIG_CLARIFY = ("That one needs more work than this demo allows in a single query. "
+                   "Try a narrower question.")
+TIMEOUT_CLARIFY = ("That query ran past the demo's 5-second limit, so the database stopped it. "
+                   "Try a narrower question.")
 
 # Written for Claude, not for humans; every note here exists because it makes the
 # generated SQL correct.
@@ -43,7 +55,8 @@ inventory(menu_item_id, quantity)
     many are in stock right now.
 
 customers(id, name, city, joined_date)
-    One row per customer. joined_date is a date.
+    One row per customer. joined_date is a date. city 'Online' marks guests who
+    ordered through this website (including the visitor's own orders).
 
 orders(id, customer_id, order_date, status, created_at)
     One row per order. customer_id -> customers.id. order_date is a date.
@@ -63,20 +76,27 @@ Notes for writing correct SQL:
   ILIKE with wildcards, never plain =. This matters most for customer names, e.g.
   WHERE customers.name ILIKE '%rakim%'. Their capitalization won't match what's
   stored (someone who orders as "rakim" is saved exactly as they typed it).
-- For completed sales, filter orders.status = 'Delivered' unless the user clearly
-  wants all orders (e.g. "including cancelled", "pending orders").
+- For revenue, sales, spend, sold, popular and top-customer questions, count every
+  order EXCEPT status 'Cancelled' as a sale (join to orders and filter
+  orders.status <> 'Cancelled'). Orders placed on this website are saved as
+  'Received' and count. Restrict to orders.status = 'Delivered' only when the user
+  asks about delivered orders specifically.
 - Group by menu_items.category for questions comparing categories (pies vs drinks).
-- Dates: today is CURRENT_DATE; use interval math like CURRENT_DATE - INTERVAL '30 days'.
-- "Most recent" / "latest" / "last" order = the order with the largest orders.id, or
-  equivalently the latest created_at. order_date is a date only, so many orders share
-  one date; never use MAX(order_date) to pick a single order. Use MAX(orders.id) or
-  ORDER BY orders.id DESC LIMIT 1 for that one order's rows.
+- Time: the shop is in New York, and queries run with the session time zone set to
+  America/New_York, so CURRENT_DATE, now() and created_at are all New York time.
+  Today is CURRENT_DATE; use interval math like CURRENT_DATE - INTERVAL '30 days'.
+- "Most recent" / "latest" / "last" order = the latest created_at: ORDER BY
+  orders.created_at DESC, orders.id DESC LIMIT 1. orders.id is NOT in time order
+  (older history was back-filled), so never use MAX(orders.id) or ORDER BY orders.id
+  to find recent orders. order_date is a date only, so many orders share one date;
+  never use MAX(order_date) to pick a single order.
 - created_at is a full timestamp, so use it for time-of-day questions (busiest hour,
   orders in the last N minutes or hours, trends over time), e.g. WHERE created_at >=
   now() - interval '1 hour', or GROUP BY date_trunc('hour', created_at).
 - An order has one or more order_items, so ALWAYS return exactly one row per order,
   never one row per line item. "The latest order" is 1 row; "the latest 5 orders" is 5
-  rows. Show each order's full contents in that single row by aggregating its items with
+  rows (ORDER BY orders.created_at DESC, orders.id DESC LIMIT 5). Show each order's
+  full contents in that single row by aggregating its items with
   GROUP BY orders.id, e.g. STRING_AGG(oi.quantity || 'x ' || mi.name, ', ') AS items,
   SUM(oi.quantity) AS item_count, SUM(oi.quantity * mi.price) AS total. Only go to
   line-item level (several rows per order) when the user explicitly asks for the items,
@@ -110,17 +130,55 @@ class Translation(BaseModel):
     clarifying_question: str
 
 
+# Translation, in the JSON-schema form structured outputs takes (same as frontend/api/ask.py).
+SCHEMA_JSON = {
+    "type": "object",
+    "properties": {
+        "understood": {"type": "boolean"},
+        "interpretation": {"type": "string"},
+        "sql": {"type": "string"},
+        "clarifying_question": {"type": "string"},
+    },
+    "required": ["understood", "interpretation", "sql", "clarifying_question"],
+    "additionalProperties": False,
+}
+
+
+def _decline(message: str) -> Translation:
+    return Translation(understood=False, interpretation="", sql="", clarifying_question=message)
+
+
 def translate(question: str) -> Translation:
     """Ask Claude to turn a plain-English question into SQL + a restatement."""
     client = anthropic.Anthropic()
-    response = client.messages.parse(
+    response = client.messages.create(
         model=MODEL,
-        max_tokens=1024,
-        system=SYSTEM,
+        max_tokens=4096,  # includes thinking; with the question cap, bounds any one call's cost
+        system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": question}],
-        output_format=Translation,
+        output_config={
+            "effort": EFFORT,
+            "format": {"type": "json_schema", "schema": SCHEMA_JSON},
+        },
+        # Most safety-classifier declines are re-run server-side on Anthropic's recommended model.
+        extra_headers={"anthropic-beta": FALLBACK_BETA},
+        extra_body={"fallbacks": "default"},
     )
-    return response.parsed_output
+    if response.stop_reason != "end_turn" or response.model != MODEL:
+        print(f"engine: stop_reason={response.stop_reason} model={response.model} "
+              f"stop_details={getattr(response, 'stop_details', None)}")
+    # Check stop_reason before reading content: a refusal can carry partial, invalid JSON.
+    if response.stop_reason == "refusal":
+        return _decline(REFUSAL_CLARIFY)
+    if response.stop_reason == "max_tokens":
+        return _decline(TOO_BIG_CLARIFY)
+    # After a mid-answer fallback, the declined model's partial output comes first.
+    blocks = response.content
+    start = max((i + 1 for i, b in enumerate(blocks) if b.type == "fallback"), default=0)
+    text = next((b.text for b in blocks[start:] if b.type == "text"), None)
+    if text is None:
+        return _decline("Could you rephrase that as a question about the shop's data?")
+    return Translation.model_validate_json(text)
 
 
 # --- read-only safety: enforced by us, not the model ------------------------
@@ -129,15 +187,24 @@ _FORBIDDEN = (
     "insert", "update", "delete", "drop", "alter", "create", "replace",
     "truncate", "grant", "revoke", "copy", "into", "vacuum", "begin", "commit",
 )
+# Functions a rollback can't undo (session advisory locks outlive it on a pooled connection,
+# and a terminated backend stays terminated). Substrings, so schema-qualified or quoted
+# spellings are caught too.
+_FORBIDDEN_CALLS = (
+    "advisory_lock", "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf",
+    "pg_rotate_logfile", "dblink", "lo_import", "lo_export",
+)
 
 
 def is_safe_select(sql: str) -> bool:
-    """A single SELECT (or CTE), no stacked statements, no write keywords."""
+    """A single SELECT (or CTE), no stacked statements, no write keywords or unsafe calls."""
     s = sql.strip().rstrip(";").strip()
     if not s or ";" in s:
         return False
     lowered = s.lower()
     if not (lowered.startswith("select") or lowered.startswith("with")):
+        return False
+    if any(call in lowered for call in _FORBIDDEN_CALLS):
         return False
     words = set(lowered.replace("(", " ").replace(")", " ").replace(",", " ").split())
     return not any(bad in words for bad in _FORBIDDEN)
@@ -155,12 +222,18 @@ def _clean(v):
 
 
 def run_query(sql: str):
-    """Execute a vetted SELECT through the read-only pizza_ro connection."""
-    with pgdb.ro_connect() as conn:
-        cur = conn.execute(sql)
-        columns = [c.name for c in cur.description]
-        rows = [{k: _clean(v) for k, v in row.items()} for row in cur.fetchmany(MAX_ROWS)]
-    return columns, rows
+    """Execute a vetted SELECT through the read-only pizza_ro connection: 5 s statement
+    timeout, New York time, at most MAX_ROWS rows (plus a truncated flag), always rolled back."""
+    sql = sql.strip().rstrip(";").strip()
+    with pgdb.ro_connect() as conn, conn.transaction(force_rollback=True):
+        conn.execute("SET LOCAL statement_timeout = '5s'")
+        conn.execute(f"SET LOCAL TIME ZONE '{SHOP_TZ}'")
+        with conn.cursor(name="ask") as cur:  # server-side: only MAX_ROWS + 1 rows leave Postgres
+            cur.execute(sql)
+            columns = [c.name for c in cur.description]
+            rows = cur.fetchmany(MAX_ROWS + 1)
+    return (columns, [{k: _clean(v) for k, v in row.items()} for row in rows[:MAX_ROWS]],
+            len(rows) > MAX_ROWS)
 
 
 def answer(question: str) -> dict:
@@ -173,9 +246,13 @@ def answer(question: str) -> dict:
         return {"ok": False, "interpretation": t.interpretation,
                 "clarify": "I could only answer that with a read-only lookup. "
                            "Try rephrasing as a question about the data."}
-    columns, rows = run_query(t.sql)
+    try:
+        columns, rows, truncated = run_query(t.sql)
+    except QueryCanceled:
+        return {"ok": False, "interpretation": t.interpretation, "sql": t.sql,
+                "clarify": TIMEOUT_CLARIFY}
     return {"ok": True, "interpretation": t.interpretation, "sql": t.sql,
-            "columns": columns, "rows": rows}
+            "columns": columns, "rows": rows, "truncated": truncated}
 
 
 if __name__ == "__main__":

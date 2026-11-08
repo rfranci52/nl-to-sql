@@ -1,4 +1,5 @@
-// Thin client for the FastAPI backend. Same shapes as the engine + orders modules.
+// Thin client for the /api endpoints (Vercel functions in production, the FastAPI
+// dev server locally). Same shapes as the engine + orders modules.
 
 export interface AskResult {
   ok: boolean;
@@ -6,6 +7,7 @@ export interface AskResult {
   sql?: string;
   columns?: string[];
   rows?: Record<string, unknown>[];
+  truncated?: boolean;
   clarify?: string;
 }
 
@@ -57,6 +59,7 @@ export interface OrderResult {
   customer?: string;
   lines?: OrderLine[];
   total?: number;
+  restocked?: string[];
   error?: string;
 }
 
