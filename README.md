@@ -4,7 +4,7 @@
 
 Anyone can place an order, then ask questions about the shop's data in plain English. Claude translates each question into a single SQL query, the query runs live against a real Postgres database, and the visitor sees the exact SQL alongside the results.
 
-That last part is the point. This is a public LLM with database access, the exact thing engineering teams are nervous about deploying. This demo exists to show that the nervousness is solvable with layered, boring, verifiable controls.
+That last part is the point. This is a public large language model (LLM) with database access, the exact thing engineering teams are nervous about deploying. This demo exists to show that the nervousness is solvable with layered, boring, verifiable controls.
 
 ## Security considerations
 
@@ -43,7 +43,8 @@ Haiku's three misses were two queries Postgres rejected (a `GROUP BY` after `LIM
 - **LLM:** Claude Opus 5.5 at low effort, with structured JSON output and prompt caching for the NL-to-SQL translation
 - **Rate limiting:** Upstash Redis (per-visitor and global daily counters)
 - **Data hygiene:** a daily cron (`frontend/api/restock.py`) resets inventory to baseline and adds the previous day's synthetic orders, so the sales history stays current; an order that leaves an item at or under 20 percent of its stock restocks it on the spot. Times are New York time. Details in [`db/README.md`](db/README.md).
+- **Local development only:** `api.py`, `engine.py`, `orders.py` and `pgdb.py` at the repo root are the earlier FastAPI version of the backend, kept as the local dev server that Vite proxies `/api` to. They are not deployed. The live endpoints, and the full query screen described above, are in `frontend/api/`.
 
 ## Why it's built this way
 
-This demo is the public evolution of a natural-language report builder I built for a firm in a heavily regulated industry, where the LLM is bounded by a real field catalog so it cannot invent a field, and non-technical staff run their own reports. Same grounding discipline, same production instincts: least privilege, read-only paths, audit visibility, and a hard cap on the worst case.
+This demo is a from-scratch public take on a natural-language report builder I built for a firm in a heavily regulated industry, where the LLM is bounded by a real field catalog so it cannot invent a field, and non-technical staff run their own reports. Same grounding discipline, same production instincts: least privilege, read-only paths, audit visibility, and a hard cap on the worst case.

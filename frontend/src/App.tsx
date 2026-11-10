@@ -105,11 +105,14 @@ export default function App() {
   return (
     <div className="wrap">
       <header>
-        <a className="backlink" href="https://rakimfrancis.com">← rakimfrancis.com</a>
+        <nav className="toplinks">
+          <a className="backlink" href="https://rakimfrancis.com">← rakimfrancis.com</a>
+          <a className="backlink" href="https://github.com/rfranci52/nl-to-sql">source on GitHub</a>
+        </nav>
         <h1>{shop}</h1>
         <p className="tag">
           Place an order, then ask about it in plain English. Your question becomes
-          SQL and runs live against the database.
+          Structured Query Language (SQL) and runs live against the database.
         </p>
       </header>
 
@@ -161,9 +164,9 @@ export default function App() {
                           <span className="item-stock">{m.in_stock} left</span>
                         </div>
                         <div className="stepper">
-                          <button onClick={() => setQty(m.id, qty - 1, cap)} disabled={qty === 0}>−</button>
+                          <button onClick={() => setQty(m.id, qty - 1, cap)} disabled={qty === 0} aria-label={`Remove one ${m.name}`}>−</button>
                           <span className="qty">{qty}</span>
-                          <button onClick={() => setQty(m.id, qty + 1, cap)} disabled={qty >= cap}>+</button>
+                          <button onClick={() => setQty(m.id, qty + 1, cap)} disabled={qty >= cap} aria-label={`Add one ${m.name}`}>+</button>
                         </div>
                       </div>
                     );
@@ -181,6 +184,7 @@ export default function App() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Your name (optional, shown publicly)"
+            aria-label="Your name, shown publicly"
             maxLength={30}
           />
           <button className="place" onClick={submitOrder} disabled={cartCount === 0 || placing}>
@@ -244,6 +248,7 @@ export default function App() {
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             placeholder="e.g. which category makes the most money?"
+            aria-label="Question about the shop's data"
             maxLength={500}
           />
           <button type="submit" disabled={loading}>
@@ -291,7 +296,7 @@ export default function App() {
       <section className="query">
         <h2 className="section-title">How this demo defends itself</h2>
         <p className="tag">
-          A public LLM with database access is the thing engineering teams worry
+          A public large language model (LLM) with database access is the thing engineering teams worry
           about, so every layer here assumes the one above it can fail:
         </p>
         <p className="tag">
@@ -318,9 +323,10 @@ export default function App() {
         </p>
         <p className="tag">
           <strong>Bounded worst case.</strong> Per-visitor and global daily limits,
-          a 5-second limit on every query, results capped at 200 rows, and an API key
-          on a small prepaid balance. If every layer failed, the demo would simply
-          stop answering until the limits reset or the balance is topped up: an
+          a 5-second limit on every query, results capped at 200 rows, and an
+          application programming interface (API) key that draws from a fixed
+          monthly balance that renews. If every layer failed, the demo would simply
+          stop answering until the limits reset or the balance renews: an
           inconvenience, not an incident.
         </p>
       </section>

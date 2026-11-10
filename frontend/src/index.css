@@ -41,9 +41,15 @@ header h1::before {
   color: var(--muted);
   max-width: 62ch;
 }
+.toplinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-bottom: 12px;
+}
 .backlink {
   display: inline-block;
-  margin-bottom: 16px;
+  padding: 4px 0;
   color: var(--muted);
   font-size: 13px;
   text-decoration: none;
@@ -320,6 +326,24 @@ header h1::before {
 }
 .askbar input:focus {
   border-color: var(--accent);
+}
+.askbar input:focus-visible,
+.checkout .name:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 600px) {
+  /* The question box gets the full width, so its example question is not cut off. */
+  .askbar {
+    flex-wrap: wrap;
+  }
+  .askbar input {
+    flex-basis: 100%;
+  }
+  .askbar button {
+    flex: 1;
+    min-height: 44px;
+  }
 }
 .askbar button {
   padding: 0 20px;

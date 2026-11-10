@@ -2,7 +2,7 @@
 
 Public writes are deliberately constrained: the order is dropdown-driven (only
 real menu-item ids and bounded quantities reach here), and the one free-text
-field, an optional name, is saferailed. Inventory decrements are guarded so stock
+field, an optional name, is checked and cleaned. Inventory decrements are guarded so stock
 can never go negative, even under concurrent orders, any ordered item left at or
 under 20 percent of its baseline is topped back up, and the whole order is one atomic
 transaction (any failure rolls the stock back too).

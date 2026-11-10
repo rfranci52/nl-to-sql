@@ -16,7 +16,7 @@ for apps that actually exist are built.
   | `pizza_ro` | the public NL→SQL `/ask` endpoint | read the pizza schema; no grant on any other app's tables |
   | `pizza_rw` | placing an order, the nightly cron | read/write the pizza schema |
   | `leads_writer` | the public contact form | INSERT a submission; cannot read any back |
-  | `leads_reader` | the authenticated admin view | read submissions |
+  | `leads_reader` | a local reporting script, never deployed | read submissions |
 
   Grants cover application tables, not everything a login can do. Like any
   Postgres role, `pizza_ro` can read the system catalogs and, outside a
@@ -26,7 +26,7 @@ for apps that actually exist are built.
 - **Inventory restocks; sales persist.** A nightly job refills
   `pizza.inventory.quantity` to each item's `baseline_stock`. Orders are never
   wiped; the ledger accumulates, so a visitor can place an order and query it
-  back later. Abuse is bounded by rate limits, input saferails, a cap on each
+  back later. Abuse is bounded by rate limits, input checks, a cap on each
   order, and a ceiling on what one name typed on the site can accumulate (past
   it, orders still go through, saved under `Guest`), not by deleting sales.
 - **The sales history stays current.** The same nightly job adds a few

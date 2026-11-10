@@ -40,7 +40,7 @@ GRANT INSERT ON leads.submissions TO leads_writer;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA leads TO leads_writer;
 ALTER ROLE leads_writer SET search_path = leads;
 
--- leads, READER: used only by the authenticated admin view.
+-- leads, READER: used only by a local reporting script, never deployed.
 CREATE ROLE leads_reader LOGIN PASSWORD 'REPLACE_ME_leads_reader';
 GRANT USAGE ON SCHEMA leads TO leads_reader;
 GRANT SELECT ON leads.submissions TO leads_reader;
