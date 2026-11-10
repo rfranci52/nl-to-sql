@@ -2,8 +2,9 @@
 
 Self-contained (stdlib + psycopg only). Validates and merges items, decrements stock
 with a guarded update, tops up any ordered item left at or under 20 percent of its baseline,
-reuses a named guest's customer row (find-or-create), and records the order in one
-atomic transaction. Rate limited via Upstash (fails open).
+reuses a named guest's customer row (find-or-create) until that name reaches a spend
+ceiling, and records the order in one atomic transaction. Rate limited via Upstash
+(fails open: orders cost nothing and the order and name caps still apply).
 """
 import hashlib
 import json
@@ -22,9 +23,23 @@ RW_URL = os.environ.get("PIZZA_RW_URL", "")
 MAX_QTY = 20
 MAX_LINES = 50
 MAX_NAME_LEN = 30
+MAX_ORDER_TOTAL = 200
+# Below the seeded fifth-best customer, so a name typed on the site can't reach a top-five list.
+MAX_NAME_SPEND = 250
+MAX_BODY_BYTES = 16 * 1024
+# Browsers attach Origin to every POST. Scripts can forge it, which is why the daily limits exist too.
+ALLOWED_ORIGINS = {"https://demo.rakimfrancis.com", "https://nl-to-sql-eight.vercel.app"}
 GUEST_CITY = "Online"
 SHOP_TZ = "America/New_York"
+_NAME_RULE = re.compile(r"[A-Za-z0-9 .'-]{1,30}")
 _LETTERS = re.compile(r"[a-z]+")
+_REPEATS = re.compile(r"(.)\1+")
+_LONG_REPEATS = re.compile(r"(.)\1{2,}")
+# Digits that stand in for letters. 1 reads as either i or l.
+_DIGIT_SWAPS = ({}, str.maketrans("013456789", "oieasgtbg"), str.maketrans("013456789", "oleasgtbg"))
+# Web addresses and phone numbers, the shapes an advert needs, plus common spam words.
+_AD_SHAPE = re.compile(r"[a-z0-9]\.[a-z]{2}|\b(?:www|https?)\b|\bdot (?:com|net|org|io)\b|(?:\d[ .-]*){7}")
+_AD_WORDS = ("bitcoin", "casino", "coupon", "crypto", "discount", "onlyfans", "promo", "telegram", "viagra", "whatsapp")
 # hashed so the public repo doesn't spell them out
 _BLOCKED = frozenset("""
 06a1d8bf7fc210de23d9540ab35744ae9db310afa0afbabe9529333e175a850f
@@ -81,7 +96,7 @@ fd70ad909b94deb27b460692084d9f2b1dbc9df3c6bcfd3caee571e707031e3f
 
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
-PER_VISITOR = int(os.environ.get("ORDER_PER_VISITOR_DAILY", "25"))
+PER_VISITOR = int(os.environ.get("ORDER_PER_VISITOR_DAILY", "10"))
 GLOBAL = int(os.environ.get("ORDER_GLOBAL_DAILY", "1000"))
 
 
@@ -90,18 +105,43 @@ class OutOfStock(Exception):
         self.item = item
 
 
+def _has_blocked_word(low):
+    """True if any run of 3+ letters hashes to a blocked word, once digit swaps and repeats are undone."""
+    grams = set()
+    for swaps in _DIGIT_SWAPS:
+        letters = "".join(_LETTERS.findall(low.translate(swaps)))
+        forms = {letters, _REPEATS.sub(r"\1", letters), _LONG_REPEATS.sub(r"\1\1", letters)}
+        forms.update(letters[:m.start()] + m[1] + letters[m.end():] for m in _REPEATS.finditer(letters))
+        grams.update(f[i:j] for f in forms for i in range(len(f)) for j in range(i + 3, len(f) + 1))
+    return any(hashlib.sha256(g.encode()).hexdigest() in _BLOCKED for g in grams)
+
+
 def clean_name(raw):
     # bound the input first: NFKC can expand one character into many
     name = unicodedata.normalize("NFKC", raw[:200] if isinstance(raw, str) else "")
-    name = "".join(c for c in name if not unicodedata.category(c).startswith("C") and c not in "<>")
+    name = "".join(c for c in name if not unicodedata.category(c).startswith("C"))
+    # accented Latin folds to its base letter and a phone's curly apostrophe to a straight one;
+    # any other non-ASCII letter, including Cyrillic and Greek lookalikes, fails the rule below
+    name = "".join(c for c in unicodedata.normalize("NFKD", name.replace("\u2019", "'"))
+                   if not unicodedata.combining(c))
     name = " ".join(name.split())[:MAX_NAME_LEN].strip()
-    # the blocked-word check ignores accents, so one accented letter can't slip a word through
-    low = "".join(c for c in unicodedata.normalize("NFKD", name.lower()) if not unicodedata.combining(c))
-    words = _LETTERS.findall(low) + ["".join(_LETTERS.findall(low))]
-    visible = any(unicodedata.category(c)[0] in "LN" and c not in "\u115f\u1160\u3164\uffa0" for c in name)
-    if not visible or low == "guest" or any(hashlib.sha256(w.encode()).hexdigest() in _BLOCKED for w in words):
+    low = name.lower()
+    if (not _NAME_RULE.fullmatch(name) or not any(c.isalnum() for c in name) or low == "guest"
+            or _AD_SHAPE.search(low) or any(w in low for w in _AD_WORDS) or _has_blocked_word(low)):
         return "Guest"
     return name
+
+
+def name_spend(conn, name):
+    """What this web name has spent so far. The lock lasts until commit, so simultaneous orders add up."""
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"tonys-pizza-name-{name.lower()}",))
+    return conn.execute(
+        "SELECT COALESCE(SUM(oi.quantity * m.price), 0)::float AS spent "
+        "FROM customers c JOIN orders o ON o.customer_id = c.id "
+        "JOIN order_items oi ON oi.order_id = o.id JOIN menu_items m ON m.id = oi.menu_item_id "
+        "WHERE c.city = %s AND lower(c.name) = lower(%s) AND o.status <> 'Cancelled'",
+        (GUEST_CITY, name),
+    ).fetchone()["spent"]
 
 
 def place_order(items, name=None):
@@ -112,10 +152,10 @@ def place_order(items, name=None):
         return {"ok": False, "error": "That order has too many lines."}
     merged = {}
     for it in items:
-        try:
-            mid, qty = int(it["menu_item_id"]), int(it["quantity"])
-        except (KeyError, TypeError, ValueError):
+        # type() rather than isinstance(): JSON true and false would otherwise count as integers
+        if not isinstance(it, dict) or type(it.get("menu_item_id")) is not int or type(it.get("quantity")) is not int:
             return {"ok": False, "error": "That order had an invalid item."}
+        mid, qty = it["menu_item_id"], it["quantity"]
         if not (1 <= qty <= MAX_QTY):
             return {"ok": False, "error": f"Quantity must be between 1 and {MAX_QTY}."}
         merged[mid] = merged.get(mid, 0) + qty
@@ -138,6 +178,10 @@ def place_order(items, name=None):
             ).fetchall()}
             if len(menu) != len(ids):
                 raise ValueError("That order had an item that isn't on the menu.")
+            order_total = round(sum(menu[mid]["price"] * qty for mid, qty in cleaned), 2)
+            if order_total > MAX_ORDER_TOTAL:
+                raise ValueError(f"Demo orders are capped at ${MAX_ORDER_TOTAL}. Try fewer items.")
+            stock = {}
             for mid, qty in cleaned:
                 got = conn.execute(
                     "UPDATE inventory SET quantity = quantity - %s "
@@ -146,12 +190,18 @@ def place_order(items, name=None):
                 ).fetchone()
                 if got is None:
                     raise OutOfStock(menu[mid]["name"])
-            restocked = [r["name"] for r in conn.execute(
+                stock[mid] = got["quantity"]
+            topped_up = conn.execute(
                 "UPDATE inventory i SET quantity = m.baseline_stock FROM menu_items m "
                 "WHERE m.id = i.menu_item_id AND i.menu_item_id = ANY(%s) "
-                "AND i.quantity <= m.baseline_stock * 0.2 RETURNING m.name",
+                "AND i.quantity <= m.baseline_stock * 0.2 RETURNING i.menu_item_id, i.quantity, m.name",
                 (ids,),
-            ).fetchall()]
+            ).fetchall()
+            stock.update({r["menu_item_id"]: r["quantity"] for r in topped_up})
+            restocked = [r["name"] for r in topped_up]
+            # past the ceiling a name stops adding to its row; the order still goes through as a Guest
+            if customer != "Guest" and name_spend(conn, customer) + order_total > MAX_NAME_SPEND:
+                customer = "Guest"
             # an anonymous Guest always gets its own row; named guests are matched case-insensitively
             cust = None if customer == "Guest" else conn.execute(
                 "SELECT id FROM customers WHERE city = %s AND lower(name) = lower(%s) "
@@ -182,7 +232,7 @@ def place_order(items, name=None):
               "subtotal": round(menu[mid]["price"] * qty, 2)} for mid, qty in cleaned]
     return {"ok": True, "order_id": order["id"], "customer": customer,
             "lines": lines, "total": round(sum(li["subtotal"] for li in lines), 2),
-            "restocked": restocked}
+            "restocked": restocked, "stock": stock}
 
 
 def _redis(*parts):
@@ -222,11 +272,24 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(payload).encode())
 
     def do_POST(self):
-        length = int(self.headers.get("content-length") or 0)
+        refused = {"ok": False, "error": "Invalid request."}
+        if self.headers.get("origin") not in ALLOWED_ORIGINS:
+            return self._reply(403, refused)
+        if (self.headers.get("content-type") or "").split(";")[0].strip().lower() != "application/json":
+            return self._reply(415, refused)
+        try:
+            length = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            return self._reply(400, refused)
+        if not 0 <= length <= MAX_BODY_BYTES:
+            return self._reply(413, refused)
         try:
             data = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
-            return self._reply(400, {"ok": False, "error": "Invalid request."})
+            return self._reply(400, refused)
+        if not isinstance(data, dict) or not isinstance(data.get("items", []), list) \
+                or not isinstance(data.get("name", ""), (str, type(None))):
+            return self._reply(400, refused)
         ip = (self.headers.get("x-forwarded-for") or "unknown").split(",")[0].strip()
         allowed, message = check_limit(ip)
         if not allowed:

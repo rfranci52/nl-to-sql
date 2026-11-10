@@ -60,6 +60,7 @@ export interface OrderResult {
   lines?: OrderLine[];
   total?: number;
   restocked?: string[];
+  stock?: Record<string, number>;
   error?: string;
 }
 

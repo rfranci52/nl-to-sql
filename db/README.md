@@ -9,19 +9,26 @@ for apps that actually exist are built.
 - **One instance, many schemas.** `pizza.*` and `leads.*` live in the same
   database but are isolated namespaces, so apps never collide and a new app is
   just a new schema.
-- **A role per job, scoped to its schema.** No app has more access than it
-  needs, which contains the blast radius of any bug or leaked credential:
+- **A role per job, scoped to its schema.** Each role's table grants stop at its
+  own schema, which contains the blast radius of any bug or leaked credential:
   | Role | Used by | Can do |
   |---|---|---|
-  | `pizza_ro` | the public NL→SQL `/ask` endpoint | read the pizza schema only |
+  | `pizza_ro` | the public NL→SQL `/ask` endpoint | read the pizza schema; no grant on any other app's tables |
   | `pizza_rw` | placing an order, the nightly cron | read/write the pizza schema |
   | `leads_writer` | the public contact form | INSERT a submission; cannot read any back |
   | `leads_reader` | the authenticated admin view | read submissions |
+
+  Grants cover application tables, not everything a login can do. Like any
+  Postgres role, `pizza_ro` can read the system catalogs and, outside a
+  read-only transaction, create temp tables and large objects. The `/ask`
+  endpoint closes those on the public path: every query runs in a read-only
+  transaction, and `is_safe_select` refuses catalog access.
 - **Inventory restocks; sales persist.** A nightly job refills
   `pizza.inventory.quantity` to each item's `baseline_stock`. Orders are never
   wiped; the ledger accumulates, so a visitor can place an order and query it
-  back later. Abuse is bounded by rate limiting + input saferails, not by
-  deleting sales.
+  back later. Abuse is bounded by rate limits, input saferails, a cap on each
+  order, and a ceiling on what one name typed on the site can accumulate (past
+  it, orders still go through, saved under `Guest`), not by deleting sales.
 - **The sales history stays current.** The same nightly job adds a few
   synthetic orders for yesterday, so "sales last week" never comes back empty.
   See [Time of day and the nightly orders](#time-of-day-and-the-nightly-orders).

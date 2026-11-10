@@ -2,10 +2,12 @@
 
 Self-contained (stdlib + psycopg only). Translates the question to SQL over HTTPS
 to Claude, enforces SELECT-only safety here (not trusted to the model), and runs it
-through the read-only pizza_ro role on Neon. Rate limited via Upstash (fails open).
+through the read-only pizza_ro role on Neon. Rate limited via Upstash (fails closed:
+every question costs money, so no limiter means no questions).
 """
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 from datetime import date, datetime
@@ -20,6 +22,10 @@ EFFORT = "low"  # Opus 5.5 always thinks; effort is the dial for latency and cos
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 MAX_ROWS = 200
 MAX_QUESTION_CHARS = 500
+MAX_BODY_BYTES = 16 * 1024
+# Browsers attach Origin to every POST. Scripts can forge it, which is why the daily limits exist too.
+ALLOWED_ORIGINS = {"https://demo.rakimfrancis.com", "https://nl-to-sql-eight.vercel.app"}
+_UNPRINTABLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]")
 SHOP_TZ = "America/New_York"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 RO_URL = os.environ.get("PIZZA_RO_URL", "")
@@ -27,7 +33,7 @@ RO_URL = os.environ.get("PIZZA_RO_URL", "")
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 PER_VISITOR = int(os.environ.get("PER_VISITOR_DAILY", "15"))
-GLOBAL = int(os.environ.get("GLOBAL_DAILY", "500"))
+GLOBAL = int(os.environ.get("GLOBAL_DAILY", "100"))
 
 SCHEMA_DESCRIPTION = """\
 PostgreSQL database for a pizza shop (schema: pizza; unqualified table names resolve there). Tables:
@@ -175,11 +181,18 @@ def translate(question):
 
 _FORBIDDEN = ("insert", "update", "delete", "drop", "alter", "create", "replace",
               "truncate", "grant", "revoke", "copy", "into", "vacuum", "begin", "commit")
-# Functions a rollback can't undo (session advisory locks outlive it on a pooled connection,
-# and a terminated backend stays terminated). Substrings, so schema-qualified or quoted
-# spellings are caught too.
-_FORBIDDEN_CALLS = ("advisory_lock", "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf",
-                    "pg_rotate_logfile", "dblink", "lo_import", "lo_export")
+# Refused anywhere in the text, so schema-qualified or quoted spellings are caught too. pg_ covers
+# the system catalogs and server functions, including the ones a rollback can't undo (session
+# advisory locks outlive it on a pooled connection, a terminated backend stays terminated).
+# _to_xml is the family that runs SQL passed in as text, which could be assembled to dodge any name here.
+_FORBIDDEN_TEXT = ("pg_", "information_schema", "_to_xml", "set_config", "current_setting", "dblink")
+# Refused only as calls: "repeat" alone is a fair alias for repeat customers. ts_ functions take SQL as
+# text too, repeat and array_fill can exhaust memory, and the lo_ family reaches large objects.
+_FORBIDDEN_CALLS = re.compile(r"""\b(?:repeat|array_fill|ts_stat|ts_rewrite|lo_\w+|loread|lowrite)"?\s*\(""")
+# lpad and rpad can exhaust memory the same way, but padding an hour or a day is ordinary, so a
+# short literal width stays allowed.
+_PAD_CALL = re.compile(r"""\b[lr]pad"?\s*\(""")
+_SHORT_PAD_CALL = re.compile(r"""\b[lr]pad"?\s*\([^,()]*(?:\([^()]*\)[^,()]*)*,\s*\d{1,3}\s*[,)]""")
 
 
 def is_safe_select(sql):
@@ -189,9 +202,15 @@ def is_safe_select(sql):
     lowered = s.lower()
     if not (lowered.startswith("select") or lowered.startswith("with")):
         return False
-    if any(call in lowered for call in _FORBIDDEN_CALLS):
+    # A comment can split a word the checks below look for, and U& can spell any name in hex escapes.
+    if any(mark in lowered for mark in ("/*", "--", "u&'", 'u&"')):
         return False
-    words = set(lowered.replace("(", " ").replace(")", " ").replace(",", " ").split())
+    if any(text in lowered for text in _FORBIDDEN_TEXT) or _FORBIDDEN_CALLS.search(lowered):
+        return False
+    if len(_PAD_CALL.findall(lowered)) != len(_SHORT_PAD_CALL.findall(lowered)):
+        return False
+    # The double quote is a separator too: a keyword can sit against a quoted name with no space.
+    words = set(lowered.replace("(", " ").replace(")", " ").replace(",", " ").replace('"', " ").split())
     return not any(bad in words for bad in _FORBIDDEN)
 
 
@@ -250,9 +269,13 @@ def _redis(*parts):
         return json.loads(r.read()).get("result")
 
 
+LIMITER_DOWN = "The demo's usage limiter isn't responding, so questions are paused. Please try again shortly."
+
+
 def check_limit(ip):
     if not (UPSTASH_URL and UPSTASH_TOKEN):
-        return True, ""
+        # Local development has no limiter; a deployment without one must not run uncapped.
+        return (False, LIMITER_DOWN) if os.environ.get("VERCEL") else (True, "")
     try:
         today = date.today().isoformat()
         vkey, gkey = f"pz:ask:v:{ip}:{today}", f"pz:ask:g:{today}"
@@ -271,8 +294,8 @@ def check_limit(ip):
                            "or reach out and I'll walk you through it directly.")
         return True, ""
     except Exception as e:
-        print(f"ask: rate limiter unavailable, failing open: {type(e).__name__}")
-        return True, ""
+        print(f"ask: rate limiter unavailable, failing closed: {type(e).__name__}")
+        return False, LIMITER_DOWN
 
 
 class handler(BaseHTTPRequestHandler):
@@ -285,13 +308,26 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        length = int(self.headers.get("content-length") or 0)
+        refused = {"ok": False, "clarify": "Invalid request."}
+        if self.headers.get("origin") not in ALLOWED_ORIGINS:
+            return self._reply(403, refused)
+        if (self.headers.get("content-type") or "").split(";")[0].strip().lower() != "application/json":
+            return self._reply(415, refused)
+        try:
+            length = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            return self._reply(400, refused)
+        if not 0 <= length <= MAX_BODY_BYTES:
+            return self._reply(413, refused)
         try:
             data = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
-            return self._reply(400, {"ok": False, "clarify": "Invalid request."})
+            return self._reply(400, refused)
+        if not isinstance(data, dict) or not isinstance(data.get("question", ""), str):
+            return self._reply(400, refused)
 
-        question = (data.get("question") or "").strip()
+        # control characters and lone surrogates mean nothing in a question and can fail downstream
+        question = _UNPRINTABLE.sub("", data.get("question", "")).strip()
         if not question:
             return self._reply(200, {"ok": False, "clarify": "Ask a question about the pizza shop."})
         if len(question) > MAX_QUESTION_CHARS:

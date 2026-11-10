@@ -2,16 +2,21 @@
 -- Data platform: application roles (least privilege)
 -- Run this LAST, after schema.sql + seed.sql.
 --
--- Each app connects as exactly the role it needs and no more. This is the
--- security spine: the public query endpoint physically cannot write, the
--- public contact form cannot read other people's submissions, and one app
--- cannot touch another app's schema.
+-- Each app connects as the role it needs. Table grants are the security spine:
+-- the public query role has no write grant on any application table, the public
+-- contact form cannot read other people's submissions, and one app's role has no
+-- grant on another app's tables. Grants are not everything a login can do; see
+-- the pizza_ro note below.
 --
 -- >>> Replace every REPLACE_ME_* below with a strong password before running. <<<
 -- ============================================================================
 
 -- pizza, READ-ONLY: used by the public NL->SQL /ask endpoint.
--- Can read the pizza schema; cannot write anything, anywhere.
+-- Can read the pizza schema and has no write grant on any application table.
+-- Like any login it can still read the Postgres system catalogs and, outside a
+-- read-only transaction, create temp tables and large objects. On the public
+-- path, /ask runs every query in a read-only transaction and is_safe_select
+-- refuses catalog access.
 CREATE ROLE pizza_ro LOGIN PASSWORD 'REPLACE_ME_pizza_ro';
 GRANT USAGE ON SCHEMA pizza TO pizza_ro;
 GRANT SELECT ON ALL TABLES IN SCHEMA pizza TO pizza_ro;

@@ -1,7 +1,8 @@
 """Vercel serverless: the menu + current stock, for the ordering UI.
 
 Self-contained (stdlib + psycopg only) so there are no local modules to bundle.
-Reads through the read-only pizza_ro role on Neon.
+Reads through the read-only pizza_ro role on Neon. Good responses are cached at the
+edge, so polling this endpoint can't keep the database compute awake.
 """
 import json
 import os
@@ -11,6 +12,8 @@ import psycopg
 from psycopg.rows import dict_row
 
 RO_URL = os.environ.get("PIZZA_RO_URL", "")
+# Longer than the database's idle window, so a slow poll still lets the compute suspend.
+EDGE_CACHE = "public, max-age=0, s-maxage=900"
 
 
 def get_menu():
@@ -27,15 +30,20 @@ def get_menu():
 
 
 class handler(BaseHTTPRequestHandler):
-    def _reply(self, status, payload):
+    def _reply(self, status, payload, cache="no-store"):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode())
 
     def do_GET(self):
+        # The edge cache keys on the full URL, so a query string would reach Postgres every time.
+        if "?" in self.path:
+            return self._reply(400, {"menu": [], "error": "Invalid request."})
         try:
-            return self._reply(200, {"menu": get_menu()})
+            menu = get_menu()
+            return self._reply(200, {"menu": menu}, EDGE_CACHE if menu else "no-store")
         except Exception:
             import traceback
             traceback.print_exc()

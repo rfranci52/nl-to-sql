@@ -63,7 +63,13 @@ export default function App() {
       setReceipt(res);
       if (res.ok) {
         setCart({});
-        getMenu().then(setMenu).catch(() => {}); // refresh stock
+        const stock = res.stock;
+        if (stock) {
+          // /api/menu is cached at the edge, so the receipt carries this order's fresh stock
+          setMenu((m) => m.map((i) => (i.id in stock ? { ...i, in_stock: stock[i.id] } : i)));
+        } else {
+          getMenu().then(setMenu).catch(() => {}); // the local dev server has no stock on its receipt
+        }
       }
     } catch (e) {
       setReceipt({ ok: false, error: e instanceof Error ? e.message : "Order failed." });
@@ -292,7 +298,8 @@ export default function App() {
           <strong>The model only proposes.</strong> Code checks every query is a
           single read-only SELECT before it runs, and it runs as a read-only
           database role inside a read-only transaction that is always rolled back,
-          so a write would be refused twice and nothing the query does persists.
+          so a write would be refused twice and the rollback discards whatever
+          the transaction changed.
         </p>
         <p className="tag">
           <strong>Grounded to the schema.</strong> The model works from an explicit
